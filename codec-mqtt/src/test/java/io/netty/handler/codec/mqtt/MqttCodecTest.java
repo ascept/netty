@@ -23,11 +23,12 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.DecoderException;
 import io.netty.util.CharsetUtil;
-import org.easymock.Mock;
 import org.junit.Before;
 import org.junit.Test;
+import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
+import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
 
@@ -76,7 +77,7 @@ public class MqttCodecTest {
         final MqttConnectMessage decodedMessage = (MqttConnectMessage) out.get(0);
 
         validateFixedHeaders(message.fixedHeader(), decodedMessage.fixedHeader());
-        vlidateConnectVariableHeader(message.variableHeader(), decodedMessage.variableHeader());
+        validateConnectVariableHeader(message.variableHeader(), decodedMessage.variableHeader());
         validateConnectPayload(message.payload(), decodedMessage.payload());
     }
 
@@ -93,7 +94,7 @@ public class MqttCodecTest {
         final MqttConnectMessage decodedMessage = (MqttConnectMessage) out.get(0);
 
         validateFixedHeaders(message.fixedHeader(), decodedMessage.fixedHeader());
-        vlidateConnectVariableHeader(message.variableHeader(), decodedMessage.variableHeader());
+        validateConnectVariableHeader(message.variableHeader(), decodedMessage.variableHeader());
         validateConnectPayload(message.payload(), decodedMessage.payload());
     }
 
@@ -116,6 +117,17 @@ public class MqttCodecTest {
             assertEquals("non-zero reserved flag", cause.getMessage());
         } finally {
             byteBuf.release();
+        }
+    }
+
+    @Test
+    public void testConnectMessageNoPassword() throws Exception {
+        final MqttConnectMessage message = createConnectMessage(MqttVersion.MQTT_3_1_1, null, PASSWORD);
+
+        try {
+            ByteBuf byteBuf = MqttEncoder.doEncode(ALLOCATOR, message);
+        } catch (Exception cause) {
+            assertTrue(cause instanceof DecoderException);
         }
     }
 
@@ -203,6 +215,30 @@ public class MqttCodecTest {
     }
 
     @Test
+    public void testSubAckMessageWithFailureInPayload() throws Exception {
+        MqttFixedHeader mqttFixedHeader =
+                new MqttFixedHeader(MqttMessageType.SUBACK, false, MqttQoS.AT_MOST_ONCE, false, 0);
+        MqttMessageIdVariableHeader mqttMessageIdVariableHeader = MqttMessageIdVariableHeader.from(12345);
+        MqttSubAckPayload mqttSubAckPayload = new MqttSubAckPayload(MqttQoS.FAILURE.value());
+        MqttSubAckMessage message =
+                new MqttSubAckMessage(mqttFixedHeader, mqttMessageIdVariableHeader, mqttSubAckPayload);
+
+        ByteBuf byteBuf = MqttEncoder.doEncode(ALLOCATOR, message);
+
+        List<Object> out = new LinkedList<Object>();
+        mqttDecoder.decode(ctx, byteBuf, out);
+
+        assertEquals("Expected one object but got " + out.size(), 1, out.size());
+
+        MqttSubAckMessage decodedMessage = (MqttSubAckMessage) out.get(0);
+        validateFixedHeaders(message.fixedHeader(), decodedMessage.fixedHeader());
+        validateMessageIdVariableHeader(message.variableHeader(), decodedMessage.variableHeader());
+        validateSubAckPayload(message.payload(), decodedMessage.payload());
+        assertEquals(1, decodedMessage.payload().grantedQoSLevels().size());
+        assertEquals(MqttQoS.FAILURE, MqttQoS.valueOf(decodedMessage.payload().grantedQoSLevels().get(0)));
+    }
+
+    @Test
     public void testUnSubscribeMessage() throws Exception {
         final MqttUnsubscribeMessage message = createUnsubscribeMessage();
         ByteBuf byteBuf = MqttEncoder.doEncode(ALLOCATOR, message);
@@ -236,6 +272,29 @@ public class MqttCodecTest {
     @Test
     public void testDisconnectMessage() throws Exception {
         testMessageWithOnlyFixedHeader(MqttMessageType.DISCONNECT);
+    }
+
+    @Test
+    public void testUnknownMessageType() throws Exception {
+
+        final MqttMessage message = createMessageWithFixedHeader(MqttMessageType.PINGREQ);
+        ByteBuf byteBuf = MqttEncoder.doEncode(ALLOCATOR, message);
+        try {
+            // setting an invalid message type (15, reserved and forbidden by MQTT 3.1.1 spec)
+            byteBuf.setByte(0, 0xF0);
+            final List<Object> out = new LinkedList<Object>();
+            mqttDecoder.decode(ctx, byteBuf, out);
+
+            assertEquals("Expected one object but got " + out.size(), 1, out.size());
+
+            final MqttMessage decodedMessage = (MqttMessage) out.get(0);
+            assertTrue(decodedMessage.decoderResult().isFailure());
+            Throwable cause = decodedMessage.decoderResult().cause();
+            assertTrue(cause instanceof IllegalArgumentException);
+            assertEquals("unknown message type: 15", cause.getMessage());
+        } finally {
+            byteBuf.release();
+        }
     }
 
     private void testMessageWithOnlyFixedHeader(MqttMessageType messageType) throws Exception {
@@ -289,31 +348,30 @@ public class MqttCodecTest {
     }
 
     private static MqttConnectMessage createConnectMessage(MqttVersion mqttVersion) {
-        MqttFixedHeader mqttFixedHeader =
-                new MqttFixedHeader(MqttMessageType.CONNECT, false, MqttQoS.AT_MOST_ONCE, false, 0);
-        MqttConnectVariableHeader mqttConnectVariableHeader =
-                new MqttConnectVariableHeader(
-                        mqttVersion.protocolName(),
-                        mqttVersion.protocolLevel(),
-                        true,
-                        true,
-                        true,
-                        1,
-                        true,
-                        true,
-                        KEEP_ALIVE_SECONDS);
-        MqttConnectPayload mqttConnectPayload =
-                new MqttConnectPayload(CLIENT_ID, WILL_TOPIC, WILL_MESSAGE, USER_NAME, PASSWORD);
+        return createConnectMessage(mqttVersion, USER_NAME, PASSWORD);
+    }
 
-        return new MqttConnectMessage(mqttFixedHeader, mqttConnectVariableHeader, mqttConnectPayload);
+    private static MqttConnectMessage createConnectMessage(MqttVersion mqttVersion, String username, String password) {
+        return MqttMessageBuilders.connect()
+                .clientId(CLIENT_ID)
+                .protocolVersion(mqttVersion)
+                .username(username)
+                .password(password)
+                .willRetain(true)
+                .willQoS(MqttQoS.AT_LEAST_ONCE)
+                .willFlag(true)
+                .willTopic(WILL_TOPIC)
+                .willMessage(WILL_MESSAGE)
+                .cleanSession(true)
+                .keepAlive(KEEP_ALIVE_SECONDS)
+                .build();
     }
 
     private static MqttConnAckMessage createConnAckMessage() {
-        MqttFixedHeader mqttFixedHeader =
-                new MqttFixedHeader(MqttMessageType.CONNACK, false, MqttQoS.AT_MOST_ONCE, false, 0);
-        MqttConnAckVariableHeader mqttConnAckVariableHeader =
-                new MqttConnAckVariableHeader(MqttConnectReturnCode.CONNECTION_ACCEPTED, true);
-        return new MqttConnAckMessage(mqttFixedHeader, mqttConnAckVariableHeader);
+        return MqttMessageBuilders.connAck()
+                .returnCode(MqttConnectReturnCode.CONNECTION_ACCEPTED)
+                .sessionPresent(true)
+                .build();
     }
 
     private static MqttPublishMessage createPublishMessage() {
@@ -361,7 +419,7 @@ public class MqttCodecTest {
         return new MqttUnsubscribeMessage(mqttFixedHeader, mqttMessageIdVariableHeader, mqttUnsubscribePayload);
     }
 
-    // Helper methdos to compare expected and actual
+    // Helper methods to compare expected and actual
     // MQTT messages
 
     private static void validateFixedHeaders(MqttFixedHeader expected, MqttFixedHeader actual) {
@@ -369,7 +427,7 @@ public class MqttCodecTest {
         assertEquals("MqttFixedHeader Qos mismatch ", expected.qosLevel(), actual.qosLevel());
     }
 
-    private static void vlidateConnectVariableHeader(
+    private static void validateConnectVariableHeader(
             MqttConnectVariableHeader expected,
             MqttConnectVariableHeader actual) {
         assertEquals("MqttConnectVariableHeader Name mismatch ", expected.name(), actual.name());
@@ -400,7 +458,13 @@ public class MqttCodecTest {
                 actual.clientIdentifier());
         assertEquals("MqttConnectPayload UserName mismatch ", expected.userName(), actual.userName());
         assertEquals("MqttConnectPayload Password mismatch ", expected.password(), actual.password());
+        assertTrue(
+                "MqttConnectPayload Password bytes mismatch ",
+                Arrays.equals(expected.passwordInBytes(), actual.passwordInBytes()));
         assertEquals("MqttConnectPayload WillMessage mismatch ", expected.willMessage(), actual.willMessage());
+        assertTrue(
+                "MqttConnectPayload WillMessage bytes mismatch ",
+                Arrays.equals(expected.willMessageInBytes(), actual.willMessageInBytes()));
         assertEquals("MqttConnectPayload WillTopic mismatch ", expected.willTopic(), actual.willTopic());
     }
 

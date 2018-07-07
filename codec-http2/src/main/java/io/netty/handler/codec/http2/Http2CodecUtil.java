@@ -35,6 +35,8 @@ import static io.netty.handler.codec.http2.Http2Exception.headerListSizeError;
 import static io.netty.util.CharsetUtil.UTF_8;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.concurrent.TimeUnit.SECONDS;
 
 /**
  * Constants and utility method used for encoding/decoding HTTP2 frames.
@@ -43,18 +45,18 @@ import static java.lang.Math.min;
 public final class Http2CodecUtil {
     public static final int CONNECTION_STREAM_ID = 0;
     public static final int HTTP_UPGRADE_STREAM_ID = 1;
-    public static final CharSequence HTTP_UPGRADE_SETTINGS_HEADER = new AsciiString("HTTP2-Settings");
+    public static final CharSequence HTTP_UPGRADE_SETTINGS_HEADER = AsciiString.cached("HTTP2-Settings");
     public static final CharSequence HTTP_UPGRADE_PROTOCOL_NAME = "h2c";
     public static final CharSequence TLS_UPGRADE_PROTOCOL_NAME = ApplicationProtocolNames.HTTP_2;
 
     public static final int PING_FRAME_PAYLOAD_LENGTH = 8;
-    public static final short MAX_UNSIGNED_BYTE = 0xFF;
+    public static final short MAX_UNSIGNED_BYTE = 0xff;
     /**
      * The maximum number of padding bytes. That is the 255 padding bytes appended to the end of a frame and the 1 byte
      * pad length field.
      */
     public static final int MAX_PADDING = 256;
-    public static final long MAX_UNSIGNED_INT = 0xFFFFFFFFL;
+    public static final long MAX_UNSIGNED_INT = 0xffffffffL;
     public static final int FRAME_HEADER_LENGTH = 9;
     public static final int SETTING_ENTRY_LENGTH = 6;
     public static final int PRIORITY_ENTRY_LENGTH = 5;
@@ -64,9 +66,6 @@ public final class Http2CodecUtil {
 
     private static final ByteBuf CONNECTION_PREFACE =
             unreleasableBuffer(directBuffer(24).writeBytes("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".getBytes(UTF_8)))
-                    .asReadOnly();
-    private static final ByteBuf EMPTY_PING =
-            unreleasableBuffer(directBuffer(PING_FRAME_PAYLOAD_LENGTH).writeZero(PING_FRAME_PAYLOAD_LENGTH))
                     .asReadOnly();
 
     private static final int MAX_PADDING_LENGTH_LENGTH = 1;
@@ -93,7 +92,7 @@ public final class Http2CodecUtil {
     public static final long MAX_CONCURRENT_STREAMS = MAX_UNSIGNED_INT;
     public static final int MAX_INITIAL_WINDOW_SIZE = Integer.MAX_VALUE;
     public static final int MAX_FRAME_SIZE_LOWER_BOUND = 0x4000;
-    public static final int MAX_FRAME_SIZE_UPPER_BOUND = 0xFFFFFF;
+    public static final int MAX_FRAME_SIZE_UPPER_BOUND = 0xffffff;
     public static final long MAX_HEADER_LIST_SIZE = MAX_UNSIGNED_INT;
 
     public static final long MIN_HEADER_TABLE_SIZE = 0;
@@ -111,6 +110,14 @@ public final class Http2CodecUtil {
      */
     public static final long DEFAULT_HEADER_LIST_SIZE = 8192;
     public static final int DEFAULT_MAX_FRAME_SIZE = MAX_FRAME_SIZE_LOWER_BOUND;
+    /**
+     * The assumed minimum value for {@code SETTINGS_MAX_CONCURRENT_STREAMS} as
+     * recommended by the <a herf="https://tools.ietf.org/html/rfc7540#section-6.5.2">HTTP/2 spec</a>.
+     */
+    public static final int SMALLEST_MAX_CONCURRENT_STREAMS = 100;
+    static final int DEFAULT_MAX_RESERVED_STREAMS = SMALLEST_MAX_CONCURRENT_STREAMS;
+    static final int DEFAULT_MIN_ALLOCATION_CHUNK = 1024;
+    static final int DEFAULT_INITIAL_HUFFMAN_DECODE_CAPACITY = 32;
 
     /**
      * Calculate the threshold in bytes which should trigger a {@code GO_AWAY} if a set of headers exceeds this amount.
@@ -123,6 +130,8 @@ public final class Http2CodecUtil {
         // This is equivalent to `maxHeaderListSize * 1.25` but we avoid floating point multiplication.
         return maxHeaderListSize + (maxHeaderListSize >>> 2);
     }
+
+    public static final long DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT_MILLIS = MILLISECONDS.convert(30, SECONDS);
 
     /**
      * Returns {@code true} if the stream is an outbound stream.
@@ -143,12 +152,6 @@ public final class Http2CodecUtil {
     }
 
     /**
-     * The assumed minimum value for {@code SETTINGS_MAX_CONCURRENT_STREAMS} as
-     * recommended by the HTTP/2 spec.
-     */
-    public static final int SMALLEST_MAX_CONCURRENT_STREAMS = 100;
-
-    /**
      * Indicates whether or not the given value for max frame size falls within the valid range.
      */
     public static boolean isMaxFrameSizeValid(int maxFrameSize) {
@@ -156,7 +159,7 @@ public final class Http2CodecUtil {
     }
 
     /**
-     * Returns a buffer containing the the {@link #CONNECTION_PREFACE}.
+     * Returns a buffer containing the {@link #CONNECTION_PREFACE}.
      */
     public static ByteBuf connectionPrefaceBuf() {
         // Return a duplicate so that modifications to the reader index will not affect the original buffer.
@@ -164,15 +167,7 @@ public final class Http2CodecUtil {
     }
 
     /**
-     * Returns a buffer filled with all zeros that is the appropriate length for a PING frame.
-     */
-    public static ByteBuf emptyPingBuf() {
-        // Return a duplicate so that modifications to the reader index will not affect the original buffer.
-        return EMPTY_PING.retainedDuplicate();
-    }
-
-    /**
-     * Iteratively looks through the causaility chain for the given exception and returns the first
+     * Iteratively looks through the causality chain for the given exception and returns the first
      * {@link Http2Exception} or {@code null} if none.
      */
     public static Http2Exception getEmbeddedHttp2Exception(Throwable cause) {
@@ -201,26 +196,7 @@ public final class Http2CodecUtil {
      * Reads a big-endian (31-bit) integer from the buffer.
      */
     public static int readUnsignedInt(ByteBuf buf) {
-        return (buf.readByte() & 0x7F) << 24 | (buf.readByte() & 0xFF) << 16
-                | (buf.readByte() & 0xFF) << 8 | buf.readByte() & 0xFF;
-    }
-
-    /**
-     * Writes a big-endian (32-bit) unsigned integer to the buffer.
-     */
-    public static void writeUnsignedInt(long value, ByteBuf out) {
-        out.writeByte((int) (value >> 24 & 0xFF));
-        out.writeByte((int) (value >> 16 & 0xFF));
-        out.writeByte((int) (value >> 8 & 0xFF));
-        out.writeByte((int) (value & 0xFF));
-    }
-
-    /**
-     * Writes a big-endian (16-bit) unsigned integer to the buffer.
-     */
-    public static void writeUnsignedShort(int value, ByteBuf out) {
-        out.writeByte(value >> 8 & 0xFF);
-        out.writeByte(value & 0xFF);
+        return buf.readInt() & 0x7fffffff;
     }
 
     /**
@@ -236,7 +212,7 @@ public final class Http2CodecUtil {
      * Calculate the amount of bytes that can be sent by {@code state}. The lower bound is {@code 0}.
      */
     public static int streamableBytes(StreamByteDistributor.StreamState state) {
-        return max(0, min(state.pendingBytes(), state.windowSize()));
+        return max(0, (int) min(state.pendingBytes(), state.windowSize()));
     }
 
     /**

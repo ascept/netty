@@ -124,14 +124,18 @@ public abstract class RenegotiateTest {
             latch.await();
             clientChannel.close().syncUninterruptibly();
             channel.close().syncUninterruptibly();
-            Throwable cause = error.get();
-            if (cause != null) {
-                throw cause;
-            }
+            verifyResult(error);
         } finally  {
             group.shutdownGracefully();
         }
     }
 
     protected abstract SslProvider serverSslProvider();
+
+    protected void verifyResult(AtomicReference<Throwable> error) throws Throwable {
+        Throwable cause = error.get();
+        if (cause != null) {
+            throw cause;
+        }
+    }
 }

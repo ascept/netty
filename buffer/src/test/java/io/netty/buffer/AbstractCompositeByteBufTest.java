@@ -16,6 +16,7 @@
 package io.netty.buffer;
 
 import io.netty.util.ReferenceCountUtil;
+import org.junit.Assume;
 import org.junit.Test;
 
 import java.nio.ByteBuffer;
@@ -60,7 +61,9 @@ public abstract class AbstractCompositeByteBufTest extends AbstractByteBufTest {
     }
 
     @Override
-    protected ByteBuf newBuffer(int length) {
+    protected ByteBuf newBuffer(int length, int maxCapacity) {
+        Assume.assumeTrue(maxCapacity == Integer.MAX_VALUE);
+
         List<ByteBuf> buffers = new ArrayList<ByteBuf>();
         for (int i = 0; i < length + 45; i += 45) {
             buffers.add(EMPTY_BUFFER);
@@ -84,7 +87,7 @@ public abstract class AbstractCompositeByteBufTest extends AbstractByteBufTest {
             buffers.add(EMPTY_BUFFER);
         }
 
-        ByteBuf buffer = wrappedBuffer(Integer.MAX_VALUE, buffers.toArray(new ByteBuf[buffers.size()])).order(order);
+        ByteBuf buffer = wrappedBuffer(Integer.MAX_VALUE, buffers.toArray(new ByteBuf[0])).order(order);
 
         // Truncate to the requested capacity.
         buffer.capacity(length);
@@ -1001,8 +1004,7 @@ public abstract class AbstractCompositeByteBufTest extends AbstractByteBufTest {
         CompositeByteBuf cbuf = compositeBuffer();
         ByteBuf buf1 = buffer().writeByte((byte) 1);
         cbuf.addComponent(true, buf1);
-        ByteBuf buf2 = EMPTY_BUFFER;
-        cbuf.addComponent(true, buf2);
+        cbuf.addComponent(true, EMPTY_BUFFER);
         ByteBuf buf3 = buffer().writeByte((byte) 2);
         cbuf.addComponent(true, buf3);
 
@@ -1101,17 +1103,37 @@ public abstract class AbstractCompositeByteBufTest extends AbstractByteBufTest {
             .addComponents(s2, s3, s4)
             .order(ByteOrder.LITTLE_ENDIAN);
 
-        assertEquals(composite.refCnt(), 1);
-        assertEquals(buffer.refCnt(), 5);
+        assertEquals(1, composite.refCnt());
+        assertEquals(5, buffer.refCnt());
 
         // releasing composite should release the 4 components
         ReferenceCountUtil.release(composite);
-        assertEquals(composite.refCnt(), 0);
-        assertEquals(buffer.refCnt(), 1);
+        assertEquals(0, composite.refCnt());
+        assertEquals(1, buffer.refCnt());
 
         // last remaining ref to buffer
         ReferenceCountUtil.release(buffer);
-        assertEquals(buffer.refCnt(), 0);
+        assertEquals(0, buffer.refCnt());
     }
 
+    @Test
+    public void testAllocatorIsSameWhenCopy() {
+        testAllocatorIsSameWhenCopy(false);
+    }
+
+    @Test
+    public void testAllocatorIsSameWhenCopyUsingIndexAndLength() {
+        testAllocatorIsSameWhenCopy(true);
+    }
+
+    private void testAllocatorIsSameWhenCopy(boolean withIndexAndLength) {
+        ByteBuf buffer = newBuffer(8);
+        buffer.writeZero(4);
+        ByteBuf copy = withIndexAndLength ? buffer.copy(0, 4) : buffer.copy();
+        assertEquals(buffer, copy);
+        assertEquals(buffer.isDirect(), copy.isDirect());
+        assertSame(buffer.alloc(), copy.alloc());
+        buffer.release();
+        copy.release();
+    }
 }

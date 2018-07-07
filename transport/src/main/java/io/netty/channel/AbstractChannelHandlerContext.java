@@ -189,8 +189,7 @@ abstract class AbstractChannelHandlerContext extends DefaultAttributeMap
 
     @Override
     public ChannelHandlerContext fireChannelActive() {
-        final AbstractChannelHandlerContext next = findContextInbound();
-        invokeChannelActive(next);
+        invokeChannelActive(findContextInbound());
         return this;
     }
 
@@ -476,7 +475,7 @@ abstract class AbstractChannelHandlerContext extends DefaultAttributeMap
         if (localAddress == null) {
             throw new NullPointerException("localAddress");
         }
-        if (!validatePromise(promise, false)) {
+        if (isNotValidPromise(promise, false)) {
             // cancelled
             return promise;
         }
@@ -520,7 +519,7 @@ abstract class AbstractChannelHandlerContext extends DefaultAttributeMap
         if (remoteAddress == null) {
             throw new NullPointerException("remoteAddress");
         }
-        if (!validatePromise(promise, false)) {
+        if (isNotValidPromise(promise, false)) {
             // cancelled
             return promise;
         }
@@ -554,7 +553,7 @@ abstract class AbstractChannelHandlerContext extends DefaultAttributeMap
 
     @Override
     public ChannelFuture disconnect(final ChannelPromise promise) {
-        if (!validatePromise(promise, false)) {
+        if (isNotValidPromise(promise, false)) {
             // cancelled
             return promise;
         }
@@ -598,7 +597,7 @@ abstract class AbstractChannelHandlerContext extends DefaultAttributeMap
 
     @Override
     public ChannelFuture close(final ChannelPromise promise) {
-        if (!validatePromise(promise, false)) {
+        if (isNotValidPromise(promise, false)) {
             // cancelled
             return promise;
         }
@@ -633,7 +632,7 @@ abstract class AbstractChannelHandlerContext extends DefaultAttributeMap
 
     @Override
     public ChannelFuture deregister(final ChannelPromise promise) {
-        if (!validatePromise(promise, false)) {
+        if (isNotValidPromise(promise, false)) {
             // cancelled
             return promise;
         }
@@ -712,7 +711,7 @@ abstract class AbstractChannelHandlerContext extends DefaultAttributeMap
         }
 
         try {
-            if (!validatePromise(promise, true)) {
+            if (isNotValidPromise(promise, true)) {
                 ReferenceCountUtil.release(msg);
                 // cancelled
                 return promise;
@@ -786,7 +785,7 @@ abstract class AbstractChannelHandlerContext extends DefaultAttributeMap
             throw new NullPointerException("msg");
         }
 
-        if (!validatePromise(promise, true)) {
+        if (isNotValidPromise(promise, true)) {
             ReferenceCountUtil.release(msg);
             // cancelled
             return promise;
@@ -833,9 +832,9 @@ abstract class AbstractChannelHandlerContext extends DefaultAttributeMap
     }
 
     private static void notifyOutboundHandlerException(Throwable cause, ChannelPromise promise) {
-        if (!(promise instanceof VoidChannelPromise)) {
-            PromiseNotificationUtil.tryFailure(promise, cause, logger);
-        }
+        // Only log if the given promise is not of type VoidChannelPromise as tryFailure(...) is expected to return
+        // false.
+        PromiseNotificationUtil.tryFailure(promise, cause, promise instanceof VoidChannelPromise ? null : logger);
     }
 
     private void notifyHandlerException(Throwable cause) {
@@ -895,7 +894,7 @@ abstract class AbstractChannelHandlerContext extends DefaultAttributeMap
         return new FailedChannelFuture(channel(), executor(), cause);
     }
 
-    private boolean validatePromise(ChannelPromise promise, boolean allowVoidPromise) {
+    private boolean isNotValidPromise(ChannelPromise promise, boolean allowVoidPromise) {
         if (promise == null) {
             throw new NullPointerException("promise");
         }
@@ -906,7 +905,7 @@ abstract class AbstractChannelHandlerContext extends DefaultAttributeMap
             //
             // See https://github.com/netty/netty/issues/2349
             if (promise.isCancelled()) {
-                return false;
+                return true;
             }
             throw new IllegalArgumentException("promise already done: " + promise);
         }
@@ -917,7 +916,7 @@ abstract class AbstractChannelHandlerContext extends DefaultAttributeMap
         }
 
         if (promise.getClass() == DefaultChannelPromise.class) {
-            return true;
+            return false;
         }
 
         if (!allowVoidPromise && promise instanceof VoidChannelPromise) {
@@ -929,7 +928,7 @@ abstract class AbstractChannelHandlerContext extends DefaultAttributeMap
             throw new IllegalArgumentException(
                     StringUtil.simpleClassName(AbstractChannel.CloseFuture.class) + " not allowed in a pipeline");
         }
-        return true;
+        return false;
     }
 
     private AbstractChannelHandlerContext findContextInbound() {
@@ -1054,15 +1053,8 @@ abstract class AbstractChannelHandlerContext extends DefaultAttributeMap
             task.promise = promise;
 
             if (ESTIMATE_TASK_SIZE_ON_SUBMIT) {
-                ChannelOutboundBuffer buffer = ctx.channel().unsafe().outboundBuffer();
-
-                // Check for null as it may be set to null if the channel is closed already
-                if (buffer != null) {
-                    task.size = ctx.pipeline.estimatorHandle().size(msg) + WRITE_TASK_OVERHEAD;
-                    buffer.incrementPendingOutboundBytes(task.size);
-                } else {
-                    task.size = 0;
-                }
+                task.size = ctx.pipeline.estimatorHandle().size(msg) + WRITE_TASK_OVERHEAD;
+                ctx.pipeline.incrementPendingOutboundBytes(task.size);
             } else {
                 task.size = 0;
             }
@@ -1071,10 +1063,9 @@ abstract class AbstractChannelHandlerContext extends DefaultAttributeMap
         @Override
         public final void run() {
             try {
-                ChannelOutboundBuffer buffer = ctx.channel().unsafe().outboundBuffer();
                 // Check for null as it may be set to null if the channel is closed already
-                if (ESTIMATE_TASK_SIZE_ON_SUBMIT && buffer != null) {
-                    buffer.decrementPendingOutboundBytes(size);
+                if (ESTIMATE_TASK_SIZE_ON_SUBMIT) {
+                    ctx.pipeline.decrementPendingOutboundBytes(size);
                 }
                 write(ctx, msg, promise);
             } finally {

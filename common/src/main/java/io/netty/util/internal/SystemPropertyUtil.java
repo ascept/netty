@@ -75,7 +75,7 @@ public final class SystemPropertyUtil {
                     }
                 });
             }
-        } catch (Exception e) {
+        } catch (SecurityException e) {
             logger.warn("Unable to retrieve a system property '{}'; default values will be used.", key, e);
         }
 
@@ -103,7 +103,7 @@ public final class SystemPropertyUtil {
 
         value = value.trim().toLowerCase();
         if (value.isEmpty()) {
-            return true;
+            return def;
         }
 
         if ("true".equals(value) || "yes".equals(value) || "1".equals(value)) {
